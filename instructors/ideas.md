@@ -30,6 +30,7 @@
 - [Future Lab](#future-lab)
   - [Future Lab - TODO - Backlog](#future-lab---todo---backlog)
   - [Future Lab - VM setup](#future-lab---vm-setup)
+  - [Hackathon](#hackathon)
 
 ## Course - TODO
 
@@ -40,8 +41,6 @@
 ### Lab 5 - TODO - Backlog
 
 ### Lab 5 - TODO - Repo
-
-- [x] move instructors/context/conventions and docs/contributing/conventions to contributing/conventions
 
 ### Lab 5 - TODO - Conventions
 
@@ -68,6 +67,9 @@
 - [?] troubleshooting - block quote
 - setup-simple.md - a simpler version of setup.md
   must be in sync
+- links should be relative markdown, not just `path/file`
+  
+  skills: links to conventions
 
 ### Lab 5 - TODO - Config
 
@@ -192,11 +194,12 @@
 ### Lab 5 - DONE - Repository
 
 - [x] Move ideas to the instructors/ideas.md.
+- Do we have a convention that an indented
 
 ### Lab 5 - DONE - Conventions
 
 - [x] conventions: prohibit agent-specific language in skills
-      see contributing/conventions/skills.md
+      see contributing/conventions/agents/skills.md
 
 ### Lab 5 - DONE - Skills
 
@@ -238,3 +241,9 @@
 
 - use [system-manager](https://github.com/numtide/system-manager)
 - Migrate relevant parts of inno-se/the-guide (environments)
+
+### Hackathon
+
+- Teach to make meeting notes after a discussion using AI
+- provide a prompt for discussing with an AI
+- set up voice mode in the agent

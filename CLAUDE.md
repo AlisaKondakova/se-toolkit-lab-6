@@ -33,7 +33,7 @@ Read and follow:
 
 Read and follow:
 
-- [`contributing/conventions/skills.md`](contributing/conventions/skills.md) — skill file structure, frontmatter fields, agent-neutral language, body sections
+- [`contributing/conventions/agents/skills.md`](contributing/conventions/agents/skills.md) — skill file structure, frontmatter fields, agent-neutral language, body sections
 
 ## When editing `contributing/conventions/`
 

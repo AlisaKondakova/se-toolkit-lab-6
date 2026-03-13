@@ -1,11 +1,15 @@
-#!/usr/bin/env python3
-"""Agent CLI - LLM-powered question answering.
+
+"""Agent CLI - LLM-powered question answering with tools.
 
 Usage:
-    uv run agent.py "What does REST stand for?"
+    uv run agent.py "How do you resolve a merge conflict?"
 
 Output (JSON to stdout):
-    {"answer": "Representational State Transfer.", "tool_calls": []}
+    {
+      "answer": "...",
+      "source": "wiki/git-workflow.md#resolving-merge-conflicts",
+      "tool_calls": [...]
+    }
 
 All debug/progress output goes to stderr.
 """
@@ -16,10 +20,67 @@ from pathlib import Path
 
 import httpx
 
+PROJECT_ROOT = Path(__file__).parent.resolve()
+
+MAX_TOOL_CALLS = 10
+
+SYSTEM_PROMPT = """You are a documentation agent that answers questions by reading project files.
+
+You have access to two tools:
+1. list_files - List files and directories in a given path
+2. read_file - Read the contents of a file
+
+To answer questions:
+1. Use list_files to discover relevant wiki files (start with "wiki" directory)
+2. Use read_file to read the content of relevant files
+3. Find the specific section that answers the question
+4. Include the source as: wiki/filename.md#section-anchor (use lowercase, replace spaces with hyphens)
+
+Always provide accurate source references based on what you read.
+When you have enough information, provide your final answer without calling more tools.
+"""
+
+TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file from the project",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path from project root (e.g., 'wiki/git-workflow.md')"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories in a directory",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative directory path from project root (e.g., 'wiki')"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    }
+]
+
 
 def load_env() -> dict[str, str]:
     """Load environment variables from .env.agent.secret."""
-    env_file = Path(__file__).parent / ".env.agent.secret"
+    env_file = PROJECT_ROOT / ".env.agent.secret"
     env_vars = {}
 
     if not env_file.exists():
@@ -39,19 +100,121 @@ def load_env() -> dict[str, str]:
     return env_vars
 
 
-def call_llm(question: str, api_key: str, api_base: str, model: str, timeout: int = 60) -> str:
-    """Call the LLM API and return the answer.
-
+def safe_path(relative_path: str) -> Path:
+    """Validate and resolve a relative path safely.
+    
+    Prevents directory traversal attacks by:
+    1. Rejecting absolute paths
+    2. Rejecting paths with '..'
+    3. Verifying resolved path is within project root
+    
     Args:
-        question: The user's question
-        api_key: API key for authentication
-        api_base: Base URL for the API (should include /v1)
-        model: Model name to use
-        timeout: Request timeout in seconds
-
+        relative_path: Path relative to project root
+        
     Returns:
-        The LLM's answer as a string
+        Resolved absolute Path
+        
+    Raises:
+        ValueError: If path is invalid or outside project root
+    """
+    if not relative_path:
+        raise ValueError("Path cannot be empty")
+    
+    if relative_path.startswith('/'):
+        raise ValueError("Absolute paths not allowed")
+    
+    if '..' in relative_path:
+        raise ValueError("Parent directory traversal not allowed")
+    
+    full_path = (PROJECT_ROOT / relative_path).resolve()
+    
+    try:
+        full_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        raise ValueError(f"Path outside project root: {relative_path}")
+    
+    return full_path
 
+
+def tool_read_file(path: str) -> str:
+    """Read a file's contents.
+    
+    Args:
+        path: Relative path from project root
+        
+    Returns:
+        File contents or error message
+    """
+    try:
+        safe = safe_path(path)
+        if not safe.exists():
+            return f"Error: File not found: {path}"
+        if not safe.is_file():
+            return f"Error: Not a file: {path}"
+        return safe.read_text()
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+def tool_list_files(path: str) -> str:
+    """List files and directories in a directory.
+    
+    Args:
+        path: Relative directory path from project root
+        
+    Returns:
+        Newline-separated list of entries or error message
+    """
+    try:
+        safe = safe_path(path)
+        if not safe.exists():
+            return f"Error: Directory not found: {path}"
+        if not safe.is_dir():
+            return f"Error: Not a directory: {path}"
+        
+        entries = sorted([e.name for e in safe.iterdir()])
+        return "\n".join(entries)
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error listing directory: {e}"
+
+
+def execute_tool(name: str, args: dict) -> str:
+    """Execute a tool by name with given arguments.
+    
+    Args:
+        name: Tool name ('read_file' or 'list_files')
+        args: Tool arguments
+        
+    Returns:
+        Tool result as string
+    """
+    if name == "read_file":
+        return tool_read_file(args.get("path", ""))
+    elif name == "list_files":
+        return tool_list_files(args.get("path", ""))
+    else:
+        return f"Error: Unknown tool: {name}"
+
+
+def call_llm(messages: list[dict], api_key: str, api_base: str, model: str, 
+             tools: list[dict] | None = None, timeout: int = 60) -> dict:
+    """Call the LLM API and return the response.
+    
+    Args:
+        messages: List of message dicts (role, content)
+        api_key: API key for authentication
+        api_base: Base URL for the API
+        model: Model name to use
+        tools: Optional list of tool schemas for function calling
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Parsed response dict with 'content' and/or 'tool_calls'
+        
     Raises:
         SystemExit: On API errors or timeouts
     """
@@ -62,20 +225,15 @@ def call_llm(question: str, api_key: str, api_base: str, model: str, timeout: in
         "Authorization": f"Bearer {api_key}",
     }
 
-    payload = {
+    payload: dict = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant. Answer questions concisely and accurately.",
-            },
-            {"role": "user", "content": question},
-        ],
+        "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 500,
+        "max_tokens": 1000,
     }
-
-    print(f"Calling LLM: {model}...", file=sys.stderr)
+    
+    if tools:
+        payload["tools"] = tools
 
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -83,18 +241,17 @@ def call_llm(question: str, api_key: str, api_base: str, model: str, timeout: in
             response.raise_for_status()
             data = response.json()
 
-            # Extract answer from OpenAI-compatible response
             choices = data.get("choices", [])
             if not choices:
                 print("Error: No choices in LLM response", file=sys.stderr)
                 sys.exit(1)
 
-            answer = choices[0].get("message", {}).get("content", "")
-            if not answer:
-                print("Error: Empty answer from LLM", file=sys.stderr)
-                sys.exit(1)
-
-            return answer.strip()
+            message = choices[0].get("message", {})
+            result = {
+                "content": message.get("content"),
+                "tool_calls": message.get("tool_calls", []),
+            }
+            return result
 
     except httpx.TimeoutException:
         print(f"Error: LLM request timed out after {timeout}s", file=sys.stderr)
@@ -108,16 +265,96 @@ def call_llm(question: str, api_key: str, api_base: str, model: str, timeout: in
         sys.exit(1)
 
 
+def run_agentic_loop(question: str, api_key: str, api_base: str, model: str) -> dict:
+    """Run the agentic loop to answer a question.
+    
+    Args:
+        question: User's question
+        api_key: API key for authentication
+        api_base: Base URL for the API
+        model: Model name to use
+        
+    Returns:
+        Response dict with 'answer', 'source', and 'tool_calls'
+    """
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
+    
+    tool_calls_log: list[dict] = []
+    last_answer: str | None = None
+    
+    for iteration in range(MAX_TOOL_CALLS):
+        print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}...", file=sys.stderr)
+        
+        response = call_llm(messages, api_key, api_base, model, tools=TOOL_SCHEMAS)
+        
+        tool_calls = response.get("tool_calls", [])
+        
+        if tool_calls:
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                name = func.get("name", "unknown")
+                args_str = func.get("arguments", "{}")
+                
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except json.JSONDecodeError:
+                    args = {}
+                
+                print(f"  Calling tool: {name}({args})", file=sys.stderr)
+                result = execute_tool(name, args)
+                
+                tool_calls_log.append({
+                    "tool": name,
+                    "args": args,
+                    "result": result,
+                })
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": result,
+                })
+        else:
+            last_answer = response.get("content", "")
+            print(f"Final answer received", file=sys.stderr)
+            break
+    else:
+        print("Max tool calls reached, using last available answer", file=sys.stderr)
+        if last_answer is None:
+            last_answer = "Unable to complete the task within the tool call limit."
+    
+    source = ""
+    if last_answer:
+        import re
+        match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
+        if match:
+            source = match.group(1)
+    
+    if not source and tool_calls_log:
+        for tc in reversed(tool_calls_log):
+            if tc["tool"] == "read_file":
+                path = tc["args"].get("path", "")
+                if path:
+                    source = path
+                break
+    
+    return {
+        "answer": last_answer or "",
+        "source": source,
+        "tool_calls": tool_calls_log,
+    }
+
+
 def main() -> None:
     """Main entry point."""
-    # Parse command-line arguments
     if len(sys.argv) < 2:
         print("Usage: uv run agent.py \"<question>\"", file=sys.stderr)
         sys.exit(1)
 
     question = sys.argv[1]
-
-    # Load configuration
     env = load_env()
     api_key = env.get("LLM_API_KEY")
     api_base = env.get("LLM_API_BASE")
@@ -131,18 +368,11 @@ def main() -> None:
         print("Error: LLM_API_BASE not set in .env.agent.secret", file=sys.stderr)
         sys.exit(1)
 
-    # Call LLM and get answer
-    answer = call_llm(question, api_key, api_base, model)
+    response = run_agentic_loop(question, api_key, api_base, model)
 
-    # Build response
-    response = {
-        "answer": answer,
-        "tool_calls": [],
-    }
-
-    # Output JSON to stdout
     print(json.dumps(response))
 
 
 if __name__ == "__main__":
     main()
+

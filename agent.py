@@ -1,40 +1,40 @@
-
-"""Agent CLI - LLM-powered question answering with tools.
-
-Usage:
-    uv run agent.py "How do you resolve a merge conflict?"
-
-Output (JSON to stdout):
-    {
-      "answer": "...",
-      "source": "wiki/git-workflow.md#resolving-merge-conflicts",
-      "tool_calls": [...]
-    }
-
-All debug/progress output goes to stderr.
-"""
-
+#!/usr/bin/env python3
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
 import httpx
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-
 MAX_TOOL_CALLS = 10
 
-SYSTEM_PROMPT = """You are a documentation agent that answers questions by reading project files.
+SYSTEM_PROMPT = """You are a system agent that answers questions by reading project files and querying the backend API.
 
-You have access to two tools:
+You have access to three tools:
 1. list_files - List files and directories in a given path
 2. read_file - Read the contents of a file
+3. query_api - Call the deployed backend API to get real-time data
+
+Tool selection guide:
+- Use list_files to discover project structure
+- Use read_file for: wiki questions, source code analysis, configuration files, documentation
+- Use query_api for: live data queries, testing endpoints, status codes, item counts, analytics
+
+When using query_api:
+- GET /items/ to list all items
+- GET /items/{id} to get a specific item
+- GET /analytics/completion-rate?lab=lab-XX for analytics
+- GET /analytics/top-learners?lab=lab-XX for top learners
+- The API key is automatically included
 
 To answer questions:
-1. Use list_files to discover relevant wiki files (start with "wiki" directory)
-2. Use read_file to read the content of relevant files
-3. Find the specific section that answers the question
-4. Include the source as: wiki/filename.md#section-anchor (use lowercase, replace spaces with hyphens)
+1. Use list_files to discover relevant files (start with "wiki" or "backend" directories)
+2. Use read_file to read file contents
+3. Use query_api for live data or endpoint testing
+4. Find the specific section that answers the question
+5. Include the source as: wiki/filename.md#section-anchor or backend/path/file.py
 
 Always provide accurate source references based on what you read.
 When you have enough information, provide your final answer without calling more tools.
@@ -74,12 +74,37 @@ TOOL_SCHEMAS = [
                 "required": ["path"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Call the deployed backend API to get real-time data or test endpoints",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        "enum": ["GET", "POST", "PUT", "DELETE"]
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API path (e.g., /items/, /analytics/completion-rate)"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT"
+                    }
+                },
+                "required": ["method", "path"]
+            }
+        }
     }
 ]
 
 
 def load_env() -> dict[str, str]:
-    """Load environment variables from .env.agent.secret."""
     env_file = PROJECT_ROOT / ".env.agent.secret"
     env_vars = {}
 
@@ -100,23 +125,27 @@ def load_env() -> dict[str, str]:
     return env_vars
 
 
+def load_docker_env() -> dict[str, str]:
+    env_file = PROJECT_ROOT / ".env.docker.secret"
+    env_vars = {}
+
+    if not env_file.exists():
+        return env_vars
+
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            env_vars[key] = value
+
+    return env_vars
+
+
 def safe_path(relative_path: str) -> Path:
-    """Validate and resolve a relative path safely.
-    
-    Prevents directory traversal attacks by:
-    1. Rejecting absolute paths
-    2. Rejecting paths with '..'
-    3. Verifying resolved path is within project root
-    
-    Args:
-        relative_path: Path relative to project root
-        
-    Returns:
-        Resolved absolute Path
-        
-    Raises:
-        ValueError: If path is invalid or outside project root
-    """
     if not relative_path:
         raise ValueError("Path cannot be empty")
     
@@ -137,14 +166,6 @@ def safe_path(relative_path: str) -> Path:
 
 
 def tool_read_file(path: str) -> str:
-    """Read a file's contents.
-    
-    Args:
-        path: Relative path from project root
-        
-    Returns:
-        File contents or error message
-    """
     try:
         safe = safe_path(path)
         if not safe.exists():
@@ -159,14 +180,6 @@ def tool_read_file(path: str) -> str:
 
 
 def tool_list_files(path: str) -> str:
-    """List files and directories in a directory.
-    
-    Args:
-        path: Relative directory path from project root
-        
-    Returns:
-        Newline-separated list of entries or error message
-    """
     try:
         safe = safe_path(path)
         if not safe.exists():
@@ -182,42 +195,59 @@ def tool_list_files(path: str) -> str:
         return f"Error listing directory: {e}"
 
 
-def execute_tool(name: str, args: dict) -> str:
-    """Execute a tool by name with given arguments.
+def tool_query_api(method: str, path: str, body: str | None = None) -> str:
+    docker_env = load_docker_env()
+    api_key = os.environ.get("LMS_API_KEY", docker_env.get("LMS_API_KEY", ""))
+    base_url = os.environ.get("AGENT_API_BASE_URL", docker_env.get("AGENT_API_BASE_URL", "http://localhost:42002"))
     
-    Args:
-        name: Tool name ('read_file' or 'list_files')
-        args: Tool arguments
+    headers = {
+        "Content-Type": "application/json",
+    }
+    
+    if api_key:
+        headers["X-API-Key"] = api_key
+    
+    url = f"{base_url.rstrip('/')}{path.lstrip('/')}"
+    
+    try:
+        request_body = None
+        if body:
+            try:
+                request_body = json.loads(body)
+            except json.JSONDecodeError:
+                request_body = body
         
-    Returns:
-        Tool result as string
-    """
+        response = httpx.request(method, url, headers=headers, json=request_body, timeout=30)
+        
+        return json.dumps({
+            "status_code": response.status_code,
+            "body": response.text
+        })
+    except httpx.TimeoutException:
+        return json.dumps({"status_code": 0, "body": "Error: Request timed out"})
+    except httpx.RequestError as e:
+        return json.dumps({"status_code": 0, "body": f"Error: {str(e)}"})
+    except Exception as e:
+        return json.dumps({"status_code": 0, "body": f"Error: {str(e)}"})
+
+
+def execute_tool(name: str, args: dict) -> str:
     if name == "read_file":
         return tool_read_file(args.get("path", ""))
     elif name == "list_files":
         return tool_list_files(args.get("path", ""))
+    elif name == "query_api":
+        return tool_query_api(
+            args.get("method", "GET"),
+            args.get("path", ""),
+            args.get("body")
+        )
     else:
         return f"Error: Unknown tool: {name}"
 
 
 def call_llm(messages: list[dict], api_key: str, api_base: str, model: str, 
              tools: list[dict] | None = None, timeout: int = 60) -> dict:
-    """Call the LLM API and return the response.
-    
-    Args:
-        messages: List of message dicts (role, content)
-        api_key: API key for authentication
-        api_base: Base URL for the API
-        model: Model name to use
-        tools: Optional list of tool schemas for function calling
-        timeout: Request timeout in seconds
-        
-    Returns:
-        Parsed response dict with 'content' and/or 'tool_calls'
-        
-    Raises:
-        SystemExit: On API errors or timeouts
-    """
     url = f"{api_base.rstrip('/').removesuffix('/v1')}/v1/chat/completions"
 
     headers = {
@@ -266,17 +296,6 @@ def call_llm(messages: list[dict], api_key: str, api_base: str, model: str,
 
 
 def run_agentic_loop(question: str, api_key: str, api_base: str, model: str) -> dict:
-    """Run the agentic loop to answer a question.
-    
-    Args:
-        question: User's question
-        api_key: API key for authentication
-        api_base: Base URL for the API
-        model: Model name to use
-        
-    Returns:
-        Response dict with 'answer', 'source', and 'tool_calls'
-    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
@@ -318,7 +337,7 @@ def run_agentic_loop(question: str, api_key: str, api_base: str, model: str) -> 
                     "content": result,
                 })
         else:
-            last_answer = response.get("content", "")
+            last_answer = response.get("content") or ""
             print(f"Final answer received", file=sys.stderr)
             break
     else:
@@ -328,7 +347,6 @@ def run_agentic_loop(question: str, api_key: str, api_base: str, model: str) -> 
     
     source = ""
     if last_answer:
-        import re
         match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
         if match:
             source = match.group(1)
@@ -349,12 +367,12 @@ def run_agentic_loop(question: str, api_key: str, api_base: str, model: str) -> 
 
 
 def main() -> None:
-    """Main entry point."""
     if len(sys.argv) < 2:
         print("Usage: uv run agent.py \"<question>\"", file=sys.stderr)
         sys.exit(1)
 
     question = sys.argv[1]
+
     env = load_env()
     api_key = env.get("LLM_API_KEY")
     api_base = env.get("LLM_API_BASE")
@@ -375,4 +393,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

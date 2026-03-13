@@ -7,18 +7,6 @@ from pathlib import Path
 
 
 def run_agent(question: str, timeout: int = 60) -> dict:
-    """Run agent.py with a question and return parsed JSON response.
-    
-    Args:
-        question: The question to ask the agent
-        timeout: Timeout in seconds
-        
-    Returns:
-        Parsed JSON response dict
-        
-    Raises:
-        AssertionError: On agent errors
-    """
     agent_path = Path(__file__).parent.parent / "agent.py"
     
     result = subprocess.run(
@@ -29,7 +17,6 @@ def run_agent(question: str, timeout: int = 60) -> dict:
     )
     
     assert result.returncode == 0, f"Agent exited with code {result.returncode}: {result.stderr}"
-    
     assert result.stdout.strip(), "Agent produced no output"
     
     try:
@@ -41,14 +28,6 @@ def run_agent(question: str, timeout: int = 60) -> dict:
 
 
 def test_agent_output_structure():
-    """Test that agent.py outputs valid JSON with required fields.
-    
-    This test runs agent.py as a subprocess with a simple question,
-    parses the stdout JSON, and verifies that:
-    - The output is valid JSON
-    - The 'answer' field exists and is a non-empty string
-    - The 'tool_calls' field exists and is an array
-    """
     question = "What does HTTP stand for?"
     data = run_agent(question)
     
@@ -63,31 +42,17 @@ def test_agent_output_structure():
 
 
 def test_merge_conflict_question():
-    """Test that agent uses read_file to answer merge conflict question.
-    
-    Question: "How do you resolve a merge conflict?"
-    Expected:
-    - read_file in tool_calls
-    - wiki/git-workflow.md in source
-    """
     question = "How do you resolve a merge conflict?"
     data = run_agent(question)
     
     tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
     assert "read_file" in tools_used, f"Expected read_file in tool_calls, got: {tools_used}"
-
+    
     source = data.get("source", "")
     assert "git-workflow.md" in source.lower(), f"Expected git-workflow.md in source, got: {source}"
 
 
 def test_wiki_listing_question():
-    """Test that agent uses list_files to answer wiki listing question.
-    
-    Question: "What files are in the wiki?"
-    Expected:
-    - list_files in tool_calls
-    - source referencing wiki directory
-    """
     question = "What files are in the wiki?"
     data = run_agent(question)
     
@@ -99,3 +64,25 @@ def test_wiki_listing_question():
     assert "wiki" in source.lower() or "wiki" in answer.lower(), \
         f"Expected wiki reference in source or answer, got source={source}, answer={answer[:100]}"
 
+
+def test_framework_question():
+    question = "What Python web framework does the backend use?"
+    data = run_agent(question)
+    
+    tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
+    assert "read_file" in tools_used, f"Expected read_file in tool_calls, got: {tools_used}"
+    
+    answer = data.get("answer", "")
+    assert "fastapi" in answer.lower() or "FastAPI" in answer, \
+        f"Expected FastAPI in answer, got: {answer[:200]}"
+
+
+def test_api_query_question():
+    question = "How many items are in the database? Query the API."
+    data = run_agent(question)
+    
+    tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
+    assert "query_api" in tools_used, f"Expected query_api in tool_calls, got: {tools_used}"
+    
+    answer = data.get("answer", "")
+    assert len(answer) > 0, "Expected non-empty answer"

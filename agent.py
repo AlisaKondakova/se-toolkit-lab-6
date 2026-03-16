@@ -22,27 +22,57 @@ You have access to three tools:
 2. read_file - Read the contents of a file
 3. query_api - Call the deployed backend API to get real-time data
 
-Tool selection guide:
-- Use list_files to discover project structure
-- Use read_file for: wiki questions, source code analysis, configuration files, documentation
-- Use query_api for: live data queries, testing endpoints, status codes, item counts, analytics
+TOOL SELECTION RULES (follow strictly):
 
-When using query_api:
-- GET /items/ to list all items
-- GET /items/{id} to get a specific item
-- GET /analytics/completion-rate?lab=lab-XX for analytics
-- GET /analytics/top-learners?lab=lab-XX for top learners
-- The API key is automatically included
+**Wiki/documentation questions** (e.g., "According to the wiki...", "What does the wiki say about..."):
+  - Step 1: Use list_files on "wiki" to find relevant files
+  - Step 2: Use read_file on the specific wiki file (e.g., "wiki/github.md", "wiki/ssh.md", "wiki/docker.md")
+  - Step 3: Find the answer in the file content
 
-To answer questions:
-1. Use list_files to discover relevant files (start with "wiki" or "backend" directories)
-2. Use read_file to read file contents
-3. Use query_api for live data or endpoint testing
-4. Find the specific section that answers the question
-5. Include the source as: wiki/filename.md#section-anchor or backend/path/file.py
+**Source code questions** (e.g., "What framework does the backend use?", "Read the source code"):
+  - Use read_file on backend files: "backend/app/main.py" for framework, "backend/app/routers/*.py" for routers
+  - Check imports at the top of main.py to identify the framework (look for "from fastapi", "import flask", etc.)
+  - For Dockerfile questions: read_file on "Dockerfile"
+  - For docker-compose questions: read_file on "docker-compose.yml"
+  - For ETL pipeline: read_file on "backend/app/etl.py"
+  - For analytics bugs: read_file on "backend/app/routers/analytics.py"
 
-Always provide accurate source references based on what you read.
-When you have enough information, provide your final answer without calling more tools.
+**Live data questions** (e.g., "How many items...", "Query the API", "What status code..."):
+  - Use query_api with method="GET" and the appropriate path
+  - Common endpoints:
+    - /items/ - list all items (use for counting items)
+    - /learners/ - list all learners (use for counting learners)
+    - /analytics/completion-rate?lab=lab-XX - completion rate (may have bugs)
+    - /analytics/top-learners?lab=lab-XX - top learners (may have bugs)
+  - For status code questions: use query_api without authentication headers to test
+
+**Bug diagnosis questions** (e.g., "What error...", "What is the bug..."):
+  - Step 1: Use query_api to trigger the error and see the error message
+  - Step 2: Look at the error type (ZeroDivisionError, TypeError, etc.)
+  - Step 3: Use read_file on the relevant source file to find the buggy line
+  - For analytics bugs: read "backend/app/routers/analytics.py" and look for:
+    - Division operations (risk of ZeroDivisionError)
+    - Sorting with None values (risk of TypeError)
+    - Operations on potentially None values
+
+**Reasoning questions** (e.g., "Explain the journey...", "Compare how..."):
+  - Use read_file on multiple relevant files
+  - For request journey: read "docker-compose.yml", "Dockerfile", "backend/app/main.py", "caddy/Caddyfile"
+  - For ETL idempotency: read "backend/app/etl.py" and look for external_id checks
+  - Synthesize information from multiple files
+
+IMPORTANT TIPS:
+- Start with list_files if you're unsure which files exist
+- Wiki files are in "wiki/" directory (e.g., wiki/github.md, wiki/docker.md, wiki/ssh.md)
+- Backend code is in "backend/app/" directory
+- When asked about branch protection, look in wiki/github.md under "Protect a branch" section
+- When asked about SSH, look in wiki/ssh.md
+- When asked about Docker cleanup, look in wiki/docker.md
+- For framework detection, check imports in backend/app/main.py
+- Always read the actual file content - don't guess
+
+When you have enough information to answer, provide your final answer without calling more tools.
+Include source references when applicable (e.g., "wiki/github.md", "backend/app/main.py").
 """
 
 TOOL_SCHEMAS = [
@@ -50,13 +80,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file from the project",
+            "description": "Read the contents of a file from the project. Use for: wiki documentation, source code analysis, configuration files (Dockerfile, docker-compose.yml), ETL pipeline, router files.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from project root (e.g., 'wiki/git-workflow.md')"
+                        "description": "Relative path from project root (e.g., 'wiki/github.md', 'backend/app/main.py', 'Dockerfile', 'docker-compose.yml', 'backend/app/etl.py', 'backend/app/routers/analytics.py')"
                     }
                 },
                 "required": ["path"]
@@ -67,13 +97,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and directories in a directory",
+            "description": "List files and directories in a directory. Use to discover project structure before reading files. Common paths: 'wiki', 'backend/app', 'backend/app/routers'.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path from project root (e.g., 'wiki')"
+                        "description": "Relative directory path from project root (e.g., 'wiki', 'backend/app', 'backend/app/routers')"
                     }
                 },
                 "required": ["path"]
@@ -84,22 +114,22 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "query_api",
-            "description": "Call the deployed backend API to get real-time data or test endpoints",
+            "description": "Call the deployed backend API to get real-time data, test endpoints, or check status codes. Use for: counting items/learners, checking HTTP status codes, testing analytics endpoints, triggering errors to diagnose bugs.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "method": {
                         "type": "string",
-                        "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        "description": "HTTP method (GET, POST, PUT, DELETE). Use GET for reading data.",
                         "enum": ["GET", "POST", "PUT", "DELETE"]
                     },
                     "path": {
                         "type": "string",
-                        "description": "API path (e.g., /items/, /analytics/completion-rate)"
+                        "description": "API path (e.g., /items/, /learners/, /analytics/completion-rate?lab=lab-99)"
                     },
                     "body": {
                         "type": "string",
-                        "description": "Optional JSON request body for POST/PUT"
+                        "description": "Optional JSON request body for POST/PUT requests"
                     }
                 },
                 "required": ["method", "path"]
@@ -226,7 +256,7 @@ def tool_query_api(method: str, path: str, body: str = None) -> str:
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             response_body = response.read().decode('utf-8')
             return json.dumps({
                 "status_code": response.status,
@@ -261,13 +291,26 @@ def execute_tool(name: str, args: dict) -> str:
 
 
 def call_llm(messages: list, api_key: str, api_base: str, model: str,
-             tools: list = None, timeout: int = 60) -> dict:
+             tools: list = None, timeout: int = 10) -> dict:
     """Call the LLM API using urllib and return the response."""
+    print(f"[DEBUG] Calling LLM with model: {model}", file=sys.stderr)
+    print(f"[DEBUG] API Base: {api_base}", file=sys.stderr)
+    print(f"[DEBUG] API Key exists: {bool(api_key)}", file=sys.stderr)
+    
+    if not api_key:
+        print("[ERROR] LLM_API_KEY is missing", file=sys.stderr)
+        return {"content": "Error: Missing API key", "tool_calls": []}
+        
+    if not api_base:
+        print("[ERROR] LLM_API_BASE is missing", file=sys.stderr)
+        return {"content": "Error: Missing API base URL", "tool_calls": []}
+
     # Normalize URL
     base = api_base.rstrip('/')
     if base.endswith('/v1'):
         base = base[:-3]
     url = f"{base}/v1/chat/completions"
+    print(f"[DEBUG] Full URL: {url}", file=sys.stderr)
 
     headers = {
         "Content-Type": "application/json",
@@ -283,30 +326,48 @@ def call_llm(messages: list, api_key: str, api_base: str, model: str,
 
     if tools:
         payload["tools"] = tools
+        print(f"[DEBUG] Using {len(tools)} tools", file=sys.stderr)
 
     try:
         data = json.dumps(payload).encode('utf-8')
+        print(f"[DEBUG] Request payload size: {len(data)} bytes", file=sys.stderr)
+        
         req = urllib.request.Request(url, data=data, headers=headers, method='POST')
         
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             response_data = json.loads(response.read().decode('utf-8'))
             
             choices = response_data.get("choices", [])
             if not choices:
+                print("[ERROR] No choices in LLM response", file=sys.stderr)
+                print(f"[ERROR] Full response: {response_data}", file=sys.stderr)
                 return {"content": "", "tool_calls": []}
 
             message = choices[0].get("message", {})
+            content = message.get("content") or ""
+            tool_calls = message.get("tool_calls", [])
+            
+            print(f"[DEBUG] Got response with content length: {len(content)}", file=sys.stderr)
+            print(f"[DEBUG] Tool calls: {len(tool_calls)}", file=sys.stderr)
+            
             return {
-                "content": message.get("content") or "",
-                "tool_calls": message.get("tool_calls", []),
+                "content": content,
+                "tool_calls": tool_calls,
             }
 
     except urllib.error.HTTPError as e:
-        return {"content": "", "tool_calls": []}
-    except urllib.error.URLError:
-        return {"content": "", "tool_calls": []}
-    except Exception:
-        return {"content": "", "tool_calls": []}
+        error_body = e.read().decode('utf-8') if e.fp else str(e)
+        print(f"[ERROR] HTTP {e.code} from LLM API", file=sys.stderr)
+        print(f"[ERROR] Response: {error_body[:500]}", file=sys.stderr)
+        return {"content": f"Error: HTTP {e.code}", "tool_calls": []}
+        
+    except urllib.error.URLError as e:
+        print(f"[ERROR] Cannot connect to LLM API: {e.reason}", file=sys.stderr)
+        return {"content": f"Error: Cannot connect - {e.reason}", "tool_calls": []}
+        
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        return {"content": f"Error: {type(e).__name__}", "tool_calls": []}
 
 
 def run_agentic_loop(question: str, config: dict) -> dict:
@@ -323,61 +384,82 @@ def run_agentic_loop(question: str, config: dict) -> dict:
     tool_calls_log = []
     last_answer = None
 
-    for iteration in range(MAX_TOOL_CALLS):
-        print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}...", file=sys.stderr)
+    try:
+        for iteration in range(MAX_TOOL_CALLS):
+            print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}...", file=sys.stderr)
 
-        response = call_llm(messages, api_key, api_base, model, tools=TOOL_SCHEMAS)
+            response = call_llm(messages, api_key, api_base, model, tools=TOOL_SCHEMAS)
 
-        tool_calls = response.get("tool_calls", [])
+            tool_calls = response.get("tool_calls", [])
 
-        if tool_calls:
-            for tc in tool_calls:
-                func = tc.get("function", {})
-                name = func.get("name", "unknown")
-                args_str = func.get("arguments", "{}")
+            if tool_calls:
+                for tc in tool_calls:
+                    try:
+                        func = tc.get("function", {})
+                        if not func:
+                            func = {}
+                        name = func.get("name", "unknown")
+                        args_str = func.get("arguments", "{}")
 
-                try:
-                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
 
-                print(f"  Calling tool: {name}({args})", file=sys.stderr)
-                result = execute_tool(name, args)
+                        if not isinstance(args, dict):
+                            args = {}
 
-                tool_calls_log.append({
-                    "tool": name,
-                    "args": args,
-                    "result": result,
-                })
+                        print(f"  Calling tool: {name}({args})", file=sys.stderr)
+                        result = execute_tool(name, args)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": result,
-                })
+                        tool_calls_log.append({
+                            "tool": name,
+                            "args": args,
+                            "result": result,
+                        })
+
+                        tool_call_id = tc.get("id", "")
+                        if not tool_call_id:
+                            tool_call_id = f"call_{len(tool_calls_log)}"
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": result,
+                        })
+                    except Exception as e:
+                        print(f"  Error processing tool call: {e}", file=sys.stderr)
+                        continue
+            else:
+                last_answer = response.get("content") or ""
+                print(f"Final answer received", file=sys.stderr)
+                break
         else:
-            last_answer = response.get("content") or ""
-            print(f"Final answer received", file=sys.stderr)
-            break
-    else:
-        print("Max tool calls reached, using last available answer", file=sys.stderr)
+            print("Max tool calls reached, using last available answer", file=sys.stderr)
+            if last_answer is None:
+                last_answer = "Unable to complete the task within the tool call limit."
+    except Exception as e:
+        print(f"Error in agentic loop: {e}", file=sys.stderr)
         if last_answer is None:
-            last_answer = "Unable to complete the task within the tool call limit."
+            last_answer = f"Error: {e}"
 
     # Extract source from answer or from tool calls
     source = ""
-    if last_answer:
-        match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
-        if match:
-            source = match.group(1)
+    try:
+        if last_answer:
+            match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
+            if match:
+                source = match.group(1)
 
-    if not source and tool_calls_log:
-        for tc in reversed(tool_calls_log):
-            if tc["tool"] == "read_file":
-                path = tc["args"].get("path", "")
-                if path:
-                    source = path
-                break
+        if not source and tool_calls_log:
+            for tc in reversed(tool_calls_log):
+                if tc.get("tool") == "read_file":
+                    path = tc.get("args", {}).get("path", "")
+                    if path:
+                        source = path
+                    break
+    except Exception as e:
+        print(f"Error extracting source: {e}", file=sys.stderr)
 
     return {
         "answer": last_answer or "",

@@ -80,9 +80,38 @@ def test_framework_question():
 def test_api_query_question():
     question = "How many items are in the database? Query the API."
     data = run_agent(question)
-    
+
     tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
     assert "query_api" in tools_used, f"Expected query_api in tool_calls, got: {tools_used}"
-    
+
     answer = data.get("answer", "")
     assert len(answer) > 0, "Expected non-empty answer"
+
+
+def test_api_routers_question():
+    """Test that agent uses list_files to discover API router modules."""
+    question = "List all API router modules in the backend. What domain does each one handle?"
+    data = run_agent(question)
+
+    tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
+    assert "list_files" in tools_used, f"Expected list_files in tool_calls, got: {tools_used}"
+
+    answer = data.get("answer", "")
+    # Check that the answer mentions some router domains
+    assert any(keyword in answer.lower() for keyword in ["items", "learners", "analytics", "interactions", "pipeline"]), \
+        f"Expected router domain mentions in answer, got: {answer[:200]}"
+
+
+def test_docker_cleanup_question():
+    """Test that agent reads docker-related wiki pages for cleanup instructions."""
+    question = "What does the project wiki say about cleaning up Docker? List the key steps."
+    data = run_agent(question)
+
+    tools_used = [tc.get("tool") for tc in data.get("tool_calls", [])]
+    assert "read_file" in tools_used, f"Expected read_file in tool_calls, got: {tools_used}"
+
+    source = data.get("source", "")
+    answer = data.get("answer", "")
+    # Check that the answer references docker wiki or contains cleanup-related keywords
+    assert "docker" in source.lower() or "docker" in answer.lower() or "clean" in answer.lower(), \
+        f"Expected docker-related content, got source={source}, answer={answer[:200]}"

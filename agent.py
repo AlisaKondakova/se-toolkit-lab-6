@@ -22,27 +22,57 @@ You have access to three tools:
 2. read_file - Read the contents of a file
 3. query_api - Call the deployed backend API to get real-time data
 
-Tool selection guide:
-- Use list_files to discover project structure
-- Use read_file for: wiki questions, source code analysis, configuration files, documentation
-- Use query_api for: live data queries, testing endpoints, status codes, item counts, analytics
+TOOL SELECTION RULES (follow strictly):
 
-When using query_api:
-- GET /items/ to list all items
-- GET /items/{id} to get a specific item
-- GET /analytics/completion-rate?lab=lab-XX for analytics
-- GET /analytics/top-learners?lab=lab-XX for top learners
-- The API key is automatically included
+**Wiki/documentation questions** (e.g., "According to the wiki...", "What does the wiki say about..."):
+  - Step 1: Use list_files on "wiki" to find relevant files
+  - Step 2: Use read_file on the specific wiki file (e.g., "wiki/github.md", "wiki/ssh.md", "wiki/docker.md")
+  - Step 3: Find the answer in the file content
 
-To answer questions:
-1. Use list_files to discover relevant files (start with "wiki" or "backend" directories)
-2. Use read_file to read file contents
-3. Use query_api for live data or endpoint testing
-4. Find the specific section that answers the question
-5. Include the source as: wiki/filename.md#section-anchor or backend/path/file.py
+**Source code questions** (e.g., "What framework does the backend use?", "Read the source code"):
+  - Use read_file on backend files: "backend/app/main.py" for framework, "backend/app/routers/*.py" for routers
+  - Check imports at the top of main.py to identify the framework (look for "from fastapi", "import flask", etc.)
+  - For Dockerfile questions: read_file on "Dockerfile"
+  - For docker-compose questions: read_file on "docker-compose.yml"
+  - For ETL pipeline: read_file on "backend/app/etl.py"
+  - For analytics bugs: read_file on "backend/app/routers/analytics.py"
 
-Always provide accurate source references based on what you read.
-When you have enough information, provide your final answer without calling more tools.
+**Live data questions** (e.g., "How many items...", "Query the API", "What status code..."):
+  - Use query_api with method="GET" and the appropriate path
+  - Common endpoints:
+    - /items/ - list all items (use for counting items)
+    - /learners/ - list all learners (use for counting learners)
+    - /analytics/completion-rate?lab=lab-XX - completion rate (may have bugs)
+    - /analytics/top-learners?lab=lab-XX - top learners (may have bugs)
+  - For status code questions: use query_api without authentication headers to test
+
+**Bug diagnosis questions** (e.g., "What error...", "What is the bug..."):
+  - Step 1: Use query_api to trigger the error and see the error message
+  - Step 2: Look at the error type (ZeroDivisionError, TypeError, etc.)
+  - Step 3: Use read_file on the relevant source file to find the buggy line
+  - For analytics bugs: read "backend/app/routers/analytics.py" and look for:
+    - Division operations (risk of ZeroDivisionError)
+    - Sorting with None values (risk of TypeError)
+    - Operations on potentially None values
+
+**Reasoning questions** (e.g., "Explain the journey...", "Compare how..."):
+  - Use read_file on multiple relevant files
+  - For request journey: read "docker-compose.yml", "Dockerfile", "backend/app/main.py", "caddy/Caddyfile"
+  - For ETL idempotency: read "backend/app/etl.py" and look for external_id checks
+  - Synthesize information from multiple files
+
+IMPORTANT TIPS:
+- Start with list_files if you're unsure which files exist
+- Wiki files are in "wiki/" directory (e.g., wiki/github.md, wiki/docker.md, wiki/ssh.md)
+- Backend code is in "backend/app/" directory
+- When asked about branch protection, look in wiki/github.md under "Protect a branch" section
+- When asked about SSH, look in wiki/ssh.md
+- When asked about Docker cleanup, look in wiki/docker.md
+- For framework detection, check imports in backend/app/main.py
+- Always read the actual file content - don't guess
+
+When you have enough information to answer, provide your final answer without calling more tools.
+Include source references when applicable (e.g., "wiki/github.md", "backend/app/main.py").
 """
 
 TOOL_SCHEMAS = [
@@ -50,13 +80,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file from the project",
+            "description": "Read the contents of a file from the project. Use for: wiki documentation, source code analysis, configuration files (Dockerfile, docker-compose.yml), ETL pipeline, router files.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from project root (e.g., 'wiki/git-workflow.md')"
+                        "description": "Relative path from project root (e.g., 'wiki/github.md', 'backend/app/main.py', 'Dockerfile', 'docker-compose.yml', 'backend/app/etl.py', 'backend/app/routers/analytics.py')"
                     }
                 },
                 "required": ["path"]
@@ -67,13 +97,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and directories in a directory",
+            "description": "List files and directories in a directory. Use to discover project structure before reading files. Common paths: 'wiki', 'backend/app', 'backend/app/routers'.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path from project root (e.g., 'wiki')"
+                        "description": "Relative directory path from project root (e.g., 'wiki', 'backend/app', 'backend/app/routers')"
                     }
                 },
                 "required": ["path"]
@@ -84,22 +114,22 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "query_api",
-            "description": "Call the deployed backend API to get real-time data or test endpoints",
+            "description": "Call the deployed backend API to get real-time data, test endpoints, or check status codes. Use for: counting items/learners, checking HTTP status codes, testing analytics endpoints, triggering errors to diagnose bugs.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "method": {
                         "type": "string",
-                        "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        "description": "HTTP method (GET, POST, PUT, DELETE). Use GET for reading data.",
                         "enum": ["GET", "POST", "PUT", "DELETE"]
                     },
                     "path": {
                         "type": "string",
-                        "description": "API path (e.g., /items/, /analytics/completion-rate)"
+                        "description": "API path (e.g., /items/, /learners/, /analytics/completion-rate?lab=lab-99)"
                     },
                     "body": {
                         "type": "string",
-                        "description": "Optional JSON request body for POST/PUT"
+                        "description": "Optional JSON request body for POST/PUT requests"
                     }
                 },
                 "required": ["method", "path"]

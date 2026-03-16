@@ -226,7 +226,7 @@ def tool_query_api(method: str, path: str, body: str = None) -> str:
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             response_body = response.read().decode('utf-8')
             return json.dumps({
                 "status_code": response.status,
@@ -261,13 +261,26 @@ def execute_tool(name: str, args: dict) -> str:
 
 
 def call_llm(messages: list, api_key: str, api_base: str, model: str,
-             tools: list = None, timeout: int = 60) -> dict:
+             tools: list = None, timeout: int = 10) -> dict:
     """Call the LLM API using urllib and return the response."""
+    print(f"[DEBUG] Calling LLM with model: {model}", file=sys.stderr)
+    print(f"[DEBUG] API Base: {api_base}", file=sys.stderr)
+    print(f"[DEBUG] API Key exists: {bool(api_key)}", file=sys.stderr)
+    
+    if not api_key:
+        print("[ERROR] LLM_API_KEY is missing", file=sys.stderr)
+        return {"content": "Error: Missing API key", "tool_calls": []}
+        
+    if not api_base:
+        print("[ERROR] LLM_API_BASE is missing", file=sys.stderr)
+        return {"content": "Error: Missing API base URL", "tool_calls": []}
+
     # Normalize URL
     base = api_base.rstrip('/')
     if base.endswith('/v1'):
         base = base[:-3]
     url = f"{base}/v1/chat/completions"
+    print(f"[DEBUG] Full URL: {url}", file=sys.stderr)
 
     headers = {
         "Content-Type": "application/json",
@@ -283,30 +296,48 @@ def call_llm(messages: list, api_key: str, api_base: str, model: str,
 
     if tools:
         payload["tools"] = tools
+        print(f"[DEBUG] Using {len(tools)} tools", file=sys.stderr)
 
     try:
         data = json.dumps(payload).encode('utf-8')
+        print(f"[DEBUG] Request payload size: {len(data)} bytes", file=sys.stderr)
+        
         req = urllib.request.Request(url, data=data, headers=headers, method='POST')
         
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             response_data = json.loads(response.read().decode('utf-8'))
             
             choices = response_data.get("choices", [])
             if not choices:
+                print("[ERROR] No choices in LLM response", file=sys.stderr)
+                print(f"[ERROR] Full response: {response_data}", file=sys.stderr)
                 return {"content": "", "tool_calls": []}
 
             message = choices[0].get("message", {})
+            content = message.get("content") or ""
+            tool_calls = message.get("tool_calls", [])
+            
+            print(f"[DEBUG] Got response with content length: {len(content)}", file=sys.stderr)
+            print(f"[DEBUG] Tool calls: {len(tool_calls)}", file=sys.stderr)
+            
             return {
-                "content": message.get("content") or "",
-                "tool_calls": message.get("tool_calls", []),
+                "content": content,
+                "tool_calls": tool_calls,
             }
 
     except urllib.error.HTTPError as e:
-        return {"content": "", "tool_calls": []}
-    except urllib.error.URLError:
-        return {"content": "", "tool_calls": []}
-    except Exception:
-        return {"content": "", "tool_calls": []}
+        error_body = e.read().decode('utf-8') if e.fp else str(e)
+        print(f"[ERROR] HTTP {e.code} from LLM API", file=sys.stderr)
+        print(f"[ERROR] Response: {error_body[:500]}", file=sys.stderr)
+        return {"content": f"Error: HTTP {e.code}", "tool_calls": []}
+        
+    except urllib.error.URLError as e:
+        print(f"[ERROR] Cannot connect to LLM API: {e.reason}", file=sys.stderr)
+        return {"content": f"Error: Cannot connect - {e.reason}", "tool_calls": []}
+        
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        return {"content": f"Error: {type(e).__name__}", "tool_calls": []}
 
 
 def run_agentic_loop(question: str, config: dict) -> dict:
@@ -323,61 +354,82 @@ def run_agentic_loop(question: str, config: dict) -> dict:
     tool_calls_log = []
     last_answer = None
 
-    for iteration in range(MAX_TOOL_CALLS):
-        print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}...", file=sys.stderr)
+    try:
+        for iteration in range(MAX_TOOL_CALLS):
+            print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}...", file=sys.stderr)
 
-        response = call_llm(messages, api_key, api_base, model, tools=TOOL_SCHEMAS)
+            response = call_llm(messages, api_key, api_base, model, tools=TOOL_SCHEMAS)
 
-        tool_calls = response.get("tool_calls", [])
+            tool_calls = response.get("tool_calls", [])
 
-        if tool_calls:
-            for tc in tool_calls:
-                func = tc.get("function", {})
-                name = func.get("name", "unknown")
-                args_str = func.get("arguments", "{}")
+            if tool_calls:
+                for tc in tool_calls:
+                    try:
+                        func = tc.get("function", {})
+                        if not func:
+                            func = {}
+                        name = func.get("name", "unknown")
+                        args_str = func.get("arguments", "{}")
 
-                try:
-                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
 
-                print(f"  Calling tool: {name}({args})", file=sys.stderr)
-                result = execute_tool(name, args)
+                        if not isinstance(args, dict):
+                            args = {}
 
-                tool_calls_log.append({
-                    "tool": name,
-                    "args": args,
-                    "result": result,
-                })
+                        print(f"  Calling tool: {name}({args})", file=sys.stderr)
+                        result = execute_tool(name, args)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": result,
-                })
+                        tool_calls_log.append({
+                            "tool": name,
+                            "args": args,
+                            "result": result,
+                        })
+
+                        tool_call_id = tc.get("id", "")
+                        if not tool_call_id:
+                            tool_call_id = f"call_{len(tool_calls_log)}"
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": result,
+                        })
+                    except Exception as e:
+                        print(f"  Error processing tool call: {e}", file=sys.stderr)
+                        continue
+            else:
+                last_answer = response.get("content") or ""
+                print(f"Final answer received", file=sys.stderr)
+                break
         else:
-            last_answer = response.get("content") or ""
-            print(f"Final answer received", file=sys.stderr)
-            break
-    else:
-        print("Max tool calls reached, using last available answer", file=sys.stderr)
+            print("Max tool calls reached, using last available answer", file=sys.stderr)
+            if last_answer is None:
+                last_answer = "Unable to complete the task within the tool call limit."
+    except Exception as e:
+        print(f"Error in agentic loop: {e}", file=sys.stderr)
         if last_answer is None:
-            last_answer = "Unable to complete the task within the tool call limit."
+            last_answer = f"Error: {e}"
 
     # Extract source from answer or from tool calls
     source = ""
-    if last_answer:
-        match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
-        if match:
-            source = match.group(1)
+    try:
+        if last_answer:
+            match = re.search(r'(wiki/[\w-]+\.md(?:#[\w-]+)?)', last_answer)
+            if match:
+                source = match.group(1)
 
-    if not source and tool_calls_log:
-        for tc in reversed(tool_calls_log):
-            if tc["tool"] == "read_file":
-                path = tc["args"].get("path", "")
-                if path:
-                    source = path
-                break
+        if not source and tool_calls_log:
+            for tc in reversed(tool_calls_log):
+                if tc.get("tool") == "read_file":
+                    path = tc.get("args", {}).get("path", "")
+                    if path:
+                        source = path
+                    break
+    except Exception as e:
+        print(f"Error extracting source: {e}", file=sys.stderr)
 
     return {
         "answer": last_answer or "",

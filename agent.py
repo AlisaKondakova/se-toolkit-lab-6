@@ -229,117 +229,56 @@ def safe_path(relative_path: str) -> Path:
 
     return full_path
 
-
 def tool_read_file(path: str, limit_lines: int = None) -> str:
-    """Read the contents of a file."""
+    """Read file contents."""
     try:
-        safe = safe_path(path)
-        if not safe.exists():
-            return f"Error: File not found: {path}"
-        if not safe.is_file():
-            return f"Error: Not a file: {path}"
-        
+        full_path = PROJECT_ROOT / path
+        if not full_path.exists():
+            return f"Error: File {path} not found"
         if limit_lines:
-            # Read only first N lines for large files
-            with open(safe, 'r') as f:
-                lines = []
-                for i, line in enumerate(f):
-                    if i >= limit_lines:
-                        break
-                    lines.append(line)
-            return ''.join(lines)
-        return safe.read_text()
-    except ValueError as e:
-        return f"Error: {e}"
+            with open(full_path, 'r') as f:
+                return ''.join([next(f) for _ in range(limit_lines)])
+        return full_path.read_text()
     except Exception as e:
         return f"Error reading file: {e}"
 
-
 def tool_list_files(path: str) -> str:
-    """List files and directories in a directory."""
+    """List files in directory."""
     try:
-        safe = safe_path(path)
-        if not safe.exists():
-            return f"Error: Directory not found: {path}"
-        if not safe.is_dir():
-            return f"Error: Not a directory: {path}"
-
-        entries = sorted([e.name for e in safe.iterdir()])
-        return "\n".join(entries)
-    except ValueError as e:
-        return f"Error: {e}"
+        full_path = PROJECT_ROOT / path
+        if not full_path.exists():
+            return f"Error: Directory {path} not found"
+        return '\n'.join(sorted([f.name for f in full_path.iterdir()]))
     except Exception as e:
         return f"Error listing directory: {e}"
 
-
 def tool_query_api(method: str, path: str, body: str = None) -> str:
-    """Call the deployed backend API using urllib."""
+    """Call backend API."""
     config = get_config()
     api_key = config.get("LMS_API_KEY", "")
     base_url = config.get("AGENT_API_BASE_URL", "http://localhost:42002")
-
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    if api_key:
-        headers["X-API-Key"] = api_key
-
-    # Ensure path starts with /
-    if not path.startswith('/'):
-        path = '/' + path
     
+    headers = {"X-API-Key": api_key} if api_key else {}
     url = f"{base_url.rstrip('/')}{path}"
-    print(f"[DEBUG] API URL: {url}", file=sys.stderr)
-
+    
     try:
-        data = None
+        import urllib.request
+        import json
+        req = urllib.request.Request(url, method=method, headers=headers)
         if body:
-            if isinstance(body, str):
-                # Try to parse as JSON first
-                try:
-                    # This validates it's proper JSON
-                    json.loads(body)
-                    data = body.encode('utf-8')
-                except json.JSONDecodeError:
-                    # Not JSON, send as string
-                    data = body.encode('utf-8')
-            else:
-                data = json.dumps(body).encode('utf-8')
-
-        req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-        
-        # Create a context that doesn't verify SSL (for self-signed certs)
-        context = ssl._create_unverified_context()
-        
-        with urllib.request.urlopen(req, context=context, timeout=10) as response:
-            response_body = response.read().decode('utf-8')
+            req.data = body.encode()
+        with urllib.request.urlopen(req) as resp:
             return json.dumps({
-                "status_code": response.status,
-                "body": response_body
+                "status_code": resp.status,
+                "body": resp.read().decode()
             })
-            
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8') if e.fp else str(e)
-        return json.dumps({
-            "status_code": e.code,
-            "body": error_body
-        })
-    except urllib.error.URLError as e:
-        return json.dumps({"status_code": 0, "body": f"Connection error: {str(e.reason)}"})
-    except socket.timeout:
-        return json.dumps({"status_code": 0, "body": "Connection timeout"})
     except Exception as e:
-        return json.dumps({"status_code": 0, "body": f"Error: {str(e)}"})
-
+        return json.dumps({"status_code": 500, "body": str(e)})
 
 def execute_tool(name: str, args: dict) -> str:
-    """Execute a tool with the given arguments."""
+    """Execute a tool."""
     if name == "read_file":
-        return tool_read_file(
-            args.get("path", ""),
-            args.get("limit_lines")
-        )
+        return tool_read_file(args.get("path", ""), args.get("limit_lines"))
     elif name == "list_files":
         return tool_list_files(args.get("path", ""))
     elif name == "query_api":
@@ -348,8 +287,7 @@ def execute_tool(name: str, args: dict) -> str:
             args.get("path", ""),
             args.get("body")
         )
-    else:
-        return f"Error: Unknown tool: {name}"
+    return f"Unknown tool: {name}"
 
 
 def call_llm(messages: list, api_key: str, api_base: str, model: str,
@@ -645,6 +583,7 @@ def run_agentic_loop(question: str, config: dict) -> dict:
         "source": source,
         "tool_calls": tool_calls_log,
     }
+
 
 
 def main() -> None:
